@@ -14,9 +14,19 @@ def load_clean_excel(file_path):
 
 # Helper functions for query parsing
 def parse_search_query(query):
-    numbers = re.findall(r'\d+', query)
-    quantity = int(numbers[0]) if numbers else None
-    product_text = re.sub(r'\d+', '', query).strip()
+    """Extracts keyword terms and identifies the target quantity ONLY if at the end of the string."""
+    # Look for a standalone number at the very end of the string
+    match = re.search(r'\s+(\d+)\s*$', query)
+    
+    if match:
+        quantity = int(match.group(1))
+        # Keep everything before the final number as the product text
+        product_text = query[:match.start()].strip()
+    else:
+        # If no number at the end, treat the whole thing as a text search
+        quantity = None
+        product_text = query.strip()
+        
     return product_text, quantity
 
 def get_tier_bracket(qty):
@@ -34,7 +44,7 @@ def get_tier_bracket(qty):
 
 # 3. UI Layout Rendering
 st.title("🎯 NJ Internal Product & Cost Finder")
-st.write("Type a product keyword and a target quantity to pull real-time supplier costs (e.g., `beanie 250`).")
+st.write("Type keywords and a target quantity to pull real-time supplier costs (e.g., `2 colour enamel badge 500`).")
 
 # Expected filename
 TARGET_FILE = "Cleaned_NJ_AI_Pricing.xlsx"
@@ -49,21 +59,28 @@ else:
         df_clean = load_clean_excel(TARGET_FILE)
         
         # Search Box
-        user_input = st.text_input("Search Engine", value="beanie 250", placeholder="e.g., socks 500, hoodie 1500")
+        user_input = st.text_input("Search Engine", value="2 coloured beanie 250", placeholder="e.g., 4 colour notebook 1000")
 
         if user_input:
             search_term, target_qty = parse_search_query(user_input)
             tier = get_tier_bracket(target_qty)
 
-            # Filter rows where Product Type or Description matches the keyword
-            results = df_clean[
-                df_clean['PRODUCT TYPE'].str.contains(search_term, case=False, na=False) |
-                df_clean['PRODUCT DESCRIPTION'].str.contains(search_term, case=False, na=False)
-            ].copy()
+            # Multi-keyword filtering (finds all words regardless of order)
+            keywords = search_term.split()
+            mask = pd.Series(True, index=df_clean.index)
+            
+            for kw in keywords:
+                kw_mask = (
+                    df_clean['PRODUCT TYPE'].str.contains(kw, case=False, na=False) |
+                    df_clean['PRODUCT DESCRIPTION'].str.contains(kw, case=False, na=False)
+                )
+                mask = mask & kw_mask
+                
+            results = df_clean[mask].copy()
 
             # Dynamic Metrics Display
             col1, col2, col3 = st.columns(3)
-            col1.metric("Parsed Product Keyword", f'"{search_term}"' if search_term else "All")
+            col1.metric("Parsed Keywords", f'"{search_term}"' if search_term else "All")
             col2.metric("Parsed Quantity Requested", f"{target_qty:,}" if target_qty else "None specified")
             col3.metric("Evaluated Tier Bracket", f"{tier}")
 
@@ -91,7 +108,7 @@ else:
                         if c in final_view.columns:
                             final_view[c] = final_view[c].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else f"£{x}" if pd.notna(x) else "TBC")
                     
-                    st.subheader(f"Matching results for quantity tier: {tier}")
+                    st.subheader(f"Boom! Matching results for quantity tier: {tier}")
                     st.dataframe(final_view, use_container_width=True)
                 else:
                     if tier == "Under MOQ":

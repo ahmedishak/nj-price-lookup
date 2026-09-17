@@ -11,7 +11,7 @@ def load_and_clean_data(file_path="4_8_2026 NJ_New_Price_List_2026_-_Calculator.
     try:
         df = pd.read_csv(file_path, header=1)
     except FileNotFoundError:
-        st.error(f"Could not find the dataset file: '{file_path}'. Please ensure it is uploaded to your GitHub repository.")
+        st.error(f"Could not find the dataset file: '{file_path}'. Please ensure it is uploaded.")
         return pd.DataFrame()
 
     # Reconstruct messy column tiers
@@ -22,11 +22,11 @@ def load_and_clean_data(file_path="4_8_2026 NJ_New_Price_List_2026_-_Calculator.
             new_cols.append(f'Supplier Cost ({base})')
         elif 20 <= i <= 28:
             base = col.replace('.1', '').replace('.2', '')
-            if base == '100-149': base = '100-249'  # Correct structural typo
+            if base == '100-149': base = '100-249'
             new_cols.append(f'Client Price ({base})')
         elif 29 <= i <= 37:
             base = col.replace('.1', '').replace('.2', '')
-            if base == '0-99': base = '50-99'        # Correct structural typo
+            if base == '0-99': base = '50-99'
             new_cols.append(f'Margin ({base})')
         else:
             new_cols.append(col)
@@ -43,13 +43,19 @@ def load_and_clean_data(file_path="4_8_2026 NJ_New_Price_List_2026_-_Calculator.
     return df
 
 def parse_search_query(query):
-    """Extracts a text search term and an integer quantity from user input."""
-    # Extract any sequential digits
-    numbers = re.findall(r'\d+', query)
-    quantity = int(numbers[0]) if numbers else None
+    """Extracts keyword terms and identifies the target quantity ONLY if at the end of the string."""
+    # Look for a standalone number at the very end of the string
+    match = re.search(r'\s+(\d+)\s*$', query)
     
-    # Strip numbers out to find product names
-    product_text = re.sub(r'\d+', '', query).strip()
+    if match:
+        quantity = int(match.group(1))
+        # Keep everything before the final number as the product text
+        product_text = query[:match.start()].strip()
+    else:
+        # If no number at the end, treat the whole thing as a text search
+        quantity = None
+        product_text = query.strip()
+        
     return product_text, quantity
 
 def get_tier_bracket(qty):
@@ -68,62 +74,64 @@ def get_tier_bracket(qty):
 
 # --- UI Layout ---
 st.title("🎯 NJ Internal Product & Cost Finder")
-st.write("Type a product keyword and a target quantity to pull real-time supplier costs (e.g., `beanie 250`).")
+st.write("Type keywords and a target quantity to pull real-time costs (e.g., `2 coloured enamel badge 500`).")
 
 # Load compiled dataset
 df_clean = load_and_clean_data()
 
 if not df_clean.empty:
     # User Search Input
-    user_input = st.text_input("Search Engine", value="beanie 250", placeholder="e.g., socks 500, hoodie 1500")
+    user_input = st.text_input("Search Engine", value="2 coloured beanie 250", placeholder="e.g., 4 colour notebook 1000")
 
     if user_input:
         search_term, target_qty = parse_search_query(user_input)
         tier = get_tier_bracket(target_qty)
 
-        # Base filter for product text match
-        results = df_clean[
-            df_clean['PRODUCT TYPE'].str.contains(search_term, case=False, na=False) |
-            df_clean['PRODUCT DESCRIPTION'].str.contains(search_term, case=False, na=False)
-        ].copy()
+        # Multi-keyword filtering (finds all words regardless of order)
+        keywords = search_term.split()
+        mask = pd.Series(True, index=df_clean.index)
+        
+        for kw in keywords:
+            kw_mask = (
+                df_clean['PRODUCT TYPE'].str.contains(kw, case=False, na=False) |
+                df_clean['PRODUCT DESCRIPTION'].str.contains(kw, case=False, na=False)
+            )
+            mask = mask & kw_mask
+            
+        results = df_clean[mask].copy()
 
         # Visual feedback metrics
         col1, col2, col3 = st.columns(3)
-        col1.metric("Parsed Product Keyword", f'"{search_term}"' if search_term else "All")
+        col1.metric("Parsed Keywords", f'"{search_term}"' if search_term else "All")
         col2.metric("Parsed Quantity Requested", f"{target_qty:,}" if target_qty else "None specified")
         col3.metric("Evaluated Tier Bracket", f"{tier}")
 
         st.write("---")
 
         if not results.empty:
-            # Dynamic matching and formatting columns based on user context
             if tier and tier != "Under MOQ":
                 cost_col = f'Supplier Cost ({tier})'
                 price_col = f'Client Price ({tier})'
                 margin_col = f'Margin ({tier})'
                 
-                # Filter down to the essential presentation columns
                 display_cols = [
                     'PRODUCT TYPE', 'PRODUCT DESCRIPTION', 'SUPPLIER', 'MOQ', 
                     cost_col, price_col, margin_col, 'DELIVERY', 'Bulk Lead Time'
                 ]
-                # Ensure columns exist in dataframe before filtering
                 display_cols = [c for c in display_cols if c in results.columns]
                 
                 final_view = results[display_cols].copy()
                 
-                # Format money columns with standard sterling prefixes
                 for c in [cost_col, price_col, margin_col, 'DELIVERY']:
                     if c in final_view.columns:
                         final_view[c] = final_view[c].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) else "TBC")
                 
-                st.subheader(f"Matching results for quantity tier: {tier}")
+                st.subheader(f"Boom! Matching results for quantity tier: {tier}")
                 st.dataframe(final_view, use_container_width=True)
             else:
                 if tier == "Under MOQ":
                     st.warning(f"⚠️ The requested quantity ({target_qty}) falls below the standard minimum order quantity requirements.")
                 
-                # If no specific tier fits or quantity isn't typed, show baseline product overview info
                 st.subheader("General Match Results (No Tier Value Applied)")
                 st.dataframe(results[['PRODUCT TYPE', 'PRODUCT DESCRIPTION', 'SUPPLIER', 'MOQ', 'Bulk Lead Time']], use_container_width=True)
         else:
